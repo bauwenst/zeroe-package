@@ -15,12 +15,9 @@ import glob
 import math
 import os
 import re
-
 import numpy as np
-
 from absl import flags, app, logging
 from seqeval import metrics
-from zeroe.utils import pos_utils as utils
 import tensorflow as tf
 from transformers import (
     TF2_WEIGHTS_NAME,
@@ -41,6 +38,9 @@ try:
     from fastprogress import master_bar, progress_bar
 except ImportError:
     from fastprogress.fastprogress import master_bar, progress_bar
+
+from zeroe.utils import pos_utils as utils
+
 
 ALL_MODELS = sum(
     (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, RobertaConfig, DistilBertConfig)), ()

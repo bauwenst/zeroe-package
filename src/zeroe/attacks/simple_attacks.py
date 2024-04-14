@@ -2,14 +2,15 @@
 #
 #  Author: Yannik Benz
 #
-
-import os
 import re
 import string
 import nltk
-import numpy as np
+# nltk.download("punkt")
 from nltk.tokenize.treebank import TreebankWordDetokenizer
+import numpy as np
 import random
+
+from ..utils.paths import PATH_DATA_ATTACKS
 
 
 def simple_perturb(text: str, method: str, perturbation_level=0.2):
@@ -63,7 +64,8 @@ def simple_perturb(text: str, method: str, perturbation_level=0.2):
 
 
 def swap(word: str, inner: bool, seed=None):
-    """Shuffles the chars in each word. If inner is set the first and last letters position remain untouched.
+    """
+    Shuffles the chars in each word. If `inner` is True, the first and last letters position remain untouched.
 
     >>> swap("hello world", True, 56)
     hlelo wlord
@@ -174,10 +176,16 @@ def truncating(word: str, minlen: int = 3, cutoff: int = 1):
 
 # This code has been taken from https://github.com/ybisk/charNMT-noise
 NN = {}
-for line in open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "en.key")):
-    line = line.split()
-    NN[line[0]] = line[1:]
-# ===
+with open(PATH_DATA_ATTACKS / "en.key", "r", encoding="utf-8") as handle:
+    for line in handle:
+        line = line.split()
+        NN[line[0]] = line[1:]
+
+typos = {}
+with open(PATH_DATA_ATTACKS / "en.natural", "r", encoding="utf-8") as handle:
+    for line in handle:
+        line = line.strip().split()
+        typos[line[0]] = line[1:]
 
 
 def key(word, probability=1.0):
@@ -202,12 +210,6 @@ def key(word, probability=1.0):
         if caps:
             word[i].upper()
     return ''.join(word)
-
-
-typos = {}
-for line in open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "en.natural")):
-    line = line.strip().split()
-    typos[line[0]] = line[1:]
 
 
 def natural(word, precentage=1.0):
@@ -243,15 +245,3 @@ def segmentation(text: str, probability=0.3):
     if buffer != "":
         result.append(buffer)
     return TreebankWordDetokenizer().detokenize(result)
-
-
-if __name__ == '__main__':
-    sentence = "I like apples very much."
-    print("Full Swap:", simple_perturb(sentence, 'full-swap', perturbation_level=0.3))
-    print("Inner Swap:", simple_perturb(sentence, 'inner-swap', perturbation_level=0.3))
-    print("Intruders:", simple_perturb(sentence, 'intrude', perturbation_level=1.0))
-    print("Disemvoweling:", simple_perturb(sentence, 'disemvowel', perturbation_level=0.3))
-    print("Truncating:", simple_perturb(sentence, 'truncate', perturbation_level=0.3))
-    print("Key Typo:", simple_perturb(sentence, 'keyboard-typo', perturbation_level=0.3))
-    print("Natural Typo:", simple_perturb(sentence, 'natural-typo', perturbation_level=0.3))
-    print("Segmentation:", simple_perturb(sentence, 'segment', perturbation_level=0.5))

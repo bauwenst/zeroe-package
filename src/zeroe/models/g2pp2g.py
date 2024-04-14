@@ -21,6 +21,8 @@ from tensorflow.keras.layers import Input, LSTM, Dense
 from tensorflow.keras.models import load_model
 from tqdm import tqdm
 
+from ..utils.paths import PATH_DATA_MODELS, PATH_DATA_TASKS
+
 
 def should_skip_seq(seq):
     """
@@ -462,7 +464,7 @@ MIN_DICT_WORD_LEN = 2
 
 # training/dictionary data
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-COMBILEX_PATH = os.path.join(SCRIPT_DIR, '../../data/g2pp2g/combilex_en_ph.tsv')
+COMBILEX_PATH = PATH_DATA_TASKS / "g2pp2g" / "combilex_en_ph.tsv"
 log.info("Vocab file is located @", COMBILEX_PATH)
 
 # out start and end token
@@ -516,10 +518,8 @@ P2G_MAX_PHONE_SEQ_LEN = max([len(phone) for phone, _ in phonetic2word_dict.items
 P2G_MAX_CHAR_SEQ_LEN = max([max([len(word) for word in words]) for _, words in phonetic2word_dict.items()]) + 2
 
 # === BASELINE MODEL ===
-G2P_BASELINE_MODEL_WEIGHTS = os.path.join(SCRIPT_DIR,
-                                          '../../models', 'g2p', 'baseline_model_weights.hdf5')
-P2G_BASELINE_MODEL_WEIGHTS = os.path.join(SCRIPT_DIR,
-                                          '../../models', 'p2g', 'baseline_model_weights.hdf5')
+G2P_BASELINE_MODEL_WEIGHTS = PATH_DATA_MODELS / "g2p" / 'baseline_model_weights.hdf5'
+P2G_BASELINE_MODEL_WEIGHTS = PATH_DATA_MODELS / "p2g" / 'baseline_model_weights.hdf5'
 log.info("Build G2P model")
 g2p_training_model, g2p_testing_encoder_model, g2p_testing_decoder_model = baseline_model(CHAR_TOKEN_COUNT,
                                                                                           PHONE_TOKEN_COUNT)
@@ -576,8 +576,8 @@ p2g_training_model.load_weights(P2G_BASELINE_MODEL_WEIGHTS)
 
 #
 log.info("Load WordSim model")
-WORD_SIM_MODEL_WEIGHTS = os.path.join(SCRIPT_DIR, '../../models', "word_sim", "model.h5")
-WORD_SIM_TOKENIZER = os.path.join(SCRIPT_DIR, '../../models', "word_sim", "tokenizer.json")
+WORD_SIM_MODEL_WEIGHTS = PATH_DATA_MODELS / "word_sim" / "model.h5"
+WORD_SIM_TOKENIZER     = PATH_DATA_MODELS / "word_sim" / "tokenizer.json"
 
 word_sim_model = load_model(WORD_SIM_MODEL_WEIGHTS)
 with open(WORD_SIM_TOKENIZER, 'r') as json_file:

@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zeroe"
+version = "2024.04.01"
+dependencies = [
+    "nltk",
+    "numpy",
+    "pandas",
+    "tqdm"
+]
+requires-python = ">= 3.9"
+authors = [
+  {name = "Steffen Eger", email = "eger@aiphes.tu-darmstadt.de"},
+  {name = "Yannik Benz", email = "yannik.benz@stud.tu-darmstadt.de"}
+]
+maintainers = []
+description = "Code for the Zéroe paper (https://aclanthology.org/2020.aacl-main.79.pdf)."
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["NLP", "Data augmentation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+advanced = [
+    "gensim~=3.8.3",
+    "fastprogress~=0.2.2",
+    "seqeval==0.0.12",
+    "scikit-learn~=0.22.1",
+    "Pillow~=7.0.0",
+    "transformers==2.5.1",
+    "torch~=1.4.0",
+    "torchvision",
+    "tensorflow~=2.0.0",
+    "tensorflow-gpu==2.0.0",
+    "tensorboardX~=2.0"
+]

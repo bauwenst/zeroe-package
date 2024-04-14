@@ -1,13 +1,11 @@
 #  Copyright (c) 2020.
 #
 #  Author: Yannik Benz
-
 import collections
 import glob
 import math
 import os
 import re
-
 import numpy as np
 import tensorflow as tf
 from absl import flags, app, logging
@@ -26,12 +24,13 @@ from transformers import (
     TFRobertaForSequenceClassification,
     create_optimizer, GradientAccumulator)
 
-import zeroe.utils.snli_utils as utils
-
 try:
     from fastprogress import master_bar, progress_bar
 except ImportError:
     from fastprogress.fastprogress import master_bar, progress_bar
+
+import zeroe.utils.snli_utils as utils
+
 
 ALL_MODELS = sum(
     (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, RobertaConfig, DistilBertConfig)), ()

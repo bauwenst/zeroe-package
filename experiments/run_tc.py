@@ -1,15 +1,15 @@
 #  Copyright (c) 2020.
 #
 #  Author: Yannik Benz
-#
 import collections
 import csv
 import glob
 import math
 import os
 import re
-
 import numpy as np
+from absl import logging, app, flags
+from sklearn.metrics import roc_auc_score
 import tensorflow as tf
 from fastprogress.fastprogress import master_bar, progress_bar
 from transformers import (
@@ -22,8 +22,6 @@ from transformers import (
 
 import zeroe.utils.tc_utils as utils
 
-from absl import logging, app, flags
-from sklearn.metrics import roc_auc_score
 
 ALL_MODELS = sum(
     (tuple(conf.pretrained_config_archive_map.keys()) for conf in (RobertaConfig)), ()

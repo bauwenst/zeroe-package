@@ -1,18 +1,14 @@
 #  Copyright (c) 2020.
 #
 #  Yannik Benz
-#
-#  Yannik Benz
 import argparse
 import logging
 import os
-
 import pandas as pd
 from tqdm import tqdm
-
-from code.attacks import simple_attacks as simple
-
 import numpy as np
+
+from zeroe.attacks import simple_attacks as simple
 
 
 def perturb_conllu(input_file_path, attacker, perturbation_level, output_file_path):
@@ -137,12 +133,12 @@ if __name__ == '__main__':
         methods = available_methods
 
     if 'phonetic' in methods:
-        from code.models import g2pp2g
+        from zeroe.models import g2pp2g
 
         g2pp2g.setup_gpu_share_config()
 
     if 'viper' in methods:
-        from code.attacks.visual import viper_ices
+        from zeroe.attacks.visual import viper_ices
 
     # init phonetic cache
     phonetic_cache = {}

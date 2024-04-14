@@ -3,19 +3,17 @@
 #  code has been taken from:
 #  https://github.com/UKPLab/naacl2019-like-humans-visual-attacks/tree/master/code
 #  adaptions were made to integrate it into our workflow
-import os
 import random
-
 import numpy as np
-
 from gensim.models import KeyedVectors as W2Vec
 
 from .perturbations_store import PerturbationsStorage
+from ...utils.paths import PATH_DATA_ATTACKS, Path
 
-SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
-perturbations_file = PerturbationsStorage(os.path.join(SCRIPT_DIR, "perturbations_file"))
 
-repres_file = os.path.join(SCRIPT_DIR, "repres.txt")
+perturbations_file = PerturbationsStorage(Path(__file__).resolve().parent / "perturbations_file")
+
+repres_file = (PATH_DATA_ATTACKS / "repres.txt").as_posix()
 print("Read representation file:", repres_file)
 model = W2Vec.load_word2vec_format(repres_file)
 print("Read representation file done.")

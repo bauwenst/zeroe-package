@@ -18,8 +18,6 @@ Fine-tuning the library models for language modeling on a text file (GPT, GPT-2,
 GPT and GPT-2 are fine-tuned using a causal language modeling (CLM) loss while BERT and RoBERTa are fine-tuned
 using a masked language modeling (MLM) loss.
 """
-
-
 import argparse
 import glob
 import logging
@@ -36,8 +34,6 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
-from zeroe.utils import pos_utils as utils
-
 from transformers import (
     WEIGHTS_NAME,
     AdamW,
@@ -64,11 +60,12 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
-
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     from tensorboardX import SummaryWriter
+
+from zeroe.utils import pos_utils as utils
 
 
 logger = logging.getLogger(__name__)
