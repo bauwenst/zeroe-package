@@ -36,7 +36,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
-from code.utils import pos_utils as utils
+from zeroe.utils import pos_utils as utils
 
 from transformers import (
     WEIGHTS_NAME,

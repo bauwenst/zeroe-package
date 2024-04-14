@@ -20,7 +20,7 @@ import numpy as np
 
 from absl import flags, app, logging
 from seqeval import metrics
-from code.utils import pos_utils as utils
+from zeroe.utils import pos_utils as utils
 import tensorflow as tf
 from transformers import (
     TF2_WEIGHTS_NAME,

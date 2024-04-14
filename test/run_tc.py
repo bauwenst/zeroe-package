@@ -1,8 +1,9 @@
 #  Copyright (c) 2020.
 #
 #  Author: Yannik Benz
-
+#
 import collections
+import csv
 import glob
 import math
 import os
@@ -10,41 +11,30 @@ import re
 
 import numpy as np
 import tensorflow as tf
-from absl import flags, app, logging
-from seqeval import metrics
-from sklearn.metrics import classification_report
+from fastprogress.fastprogress import master_bar, progress_bar
 from transformers import (
-    TF2_WEIGHTS_NAME,
-    BertConfig,
-    BertTokenizer,
-    DistilBertConfig,
-    DistilBertTokenizer,
     RobertaConfig,
+    create_optimizer,
+    GradientAccumulator,
+    TF2_WEIGHTS_NAME,
     RobertaTokenizer,
-    TFBertForSequenceClassification,
-    TFDistilBertForSequenceClassification,
-    TFRobertaForSequenceClassification,
-    create_optimizer, GradientAccumulator)
+    TFRobertaForSequenceClassification)
 
-import code.utils.snli_utils as utils
+import zeroe.utils.tc_utils as utils
 
-try:
-    from fastprogress import master_bar, progress_bar
-except ImportError:
-    from fastprogress.fastprogress import master_bar, progress_bar
+from absl import logging, app, flags
+from sklearn.metrics import roc_auc_score
 
 ALL_MODELS = sum(
-    (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig, RobertaConfig, DistilBertConfig)), ()
+    (tuple(conf.pretrained_config_archive_map.keys()) for conf in (RobertaConfig)), ()
 )
 
 MODEL_CLASSES = {
-    "bert": (BertConfig, TFBertForSequenceClassification, BertTokenizer),
-    "roberta": (RobertaConfig, TFRobertaForSequenceClassification, RobertaTokenizer),
-    "distilbert": (DistilBertConfig, TFDistilBertForSequenceClassification, DistilBertTokenizer),
+    "roberta": (RobertaConfig, TFRobertaForSequenceClassification, RobertaTokenizer)
 }
 
 flags.DEFINE_string(
-    "data_dir", None, "The input data dir. Should contain the .conll files (or other data files) " "for the task."
+    "data_dir", None, "The input data dir. Should contain the data files for the task."
 )
 
 flags.DEFINE_string("model_type", None, "Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
@@ -58,41 +48,41 @@ flags.DEFINE_string(
 )
 
 flags.DEFINE_string(
-    "labels", "", "Path to a file containing all labels. If not specified, CoNLL-2003 labels are used."
+    "labels", "", "Path to a file containing all labels. If not specified, default TC are used."
 )
 
 flags.DEFINE_string("config_name", "", "Pretrained config name or path if not the same as model_name")
 
 flags.DEFINE_string("tokenizer_name", "", "Pretrained tokenizer name or path if not the same as model_name")
 
-flags.DEFINE_string("cache_dir", "", "Where do you want to store the pre-trained models downloaded from s3")
+flags.DEFINE_string("cache_dir", "", "Where do you want to store the pre-trained huggingface models downloaded from s3")
 
 flags.DEFINE_integer(
     "max_seq_length",
-    128,
+    256,
     "The maximum total input sentence length after tokenization. "
-    "Sequences longer than this will be truncated, sequences shorter "
-    "will be padded.",
+    "Sequences longer than this will be truncated, sequences shorter will be padded.",
 )
 
 PERTURBER = ["full-swap", "inner-swap", "intrude", "disemvowel",
              "truncate", "keyboard-typo", "natural-typo", "segment",
              "phonetic", "viper"]
-NO_PERTURBER = ["no_" + pert for pert in PERTURBER]
+NO_PERTURBER = ["no_" + pert for pert in PERTURBER]  # perturbers for leave-one-out training
+
 flags.DEFINE_string(
     "perturber",
     None,
-    "The actual perturber data to apply."
+    "The actual perturber to apply."
 )
 flags.register_validator("perturber",
                          lambda flag_value: flag_value is None or flag_value in PERTURBER + NO_PERTURBER,
-                         f"Perturber must be in {PERTURBER + NO_PERTURBER}")
+                         f"Level must be in {PERTURBER + NO_PERTURBER}")
 
-LEVELS = ["low", "mid", "high", "lmh", "clmh"]
+LEVELS = ["low", "mid", "high", "lmh"]
 flags.DEFINE_string(
     "level",
     None,
-    "The level of perturbation to take."
+    "The level of perturbation."
 )
 flags.register_validator("level",
                          lambda flag_value: flag_value is None or flag_value in LEVELS,
@@ -128,7 +118,7 @@ flags.DEFINE_integer(
     "gradient_accumulation_steps", 1, "Number of updates steps to accumulate before performing a backward/update pass."
 )
 
-flags.DEFINE_float("learning_rate", 3e-5, "The initial learning rate for Adam.")
+flags.DEFINE_float("learning_rate", 5e-5, "The initial learning rate for Adam.")
 
 flags.DEFINE_float("weight_decay", 0.0, "Weight decay if we apply some.")
 
@@ -172,61 +162,6 @@ flags.DEFINE_string(
 )
 
 
-def evaluate(args, strategy, model, tokenizer, labels, pad_token_label_id, mode):
-    eval_batch_size = args["per_device_eval_batch_size"] * args["n_device"]
-    eval_dataset, size = load_and_cache_examples(
-        args, tokenizer, labels, pad_token_label_id, eval_batch_size, mode=mode
-    )
-    eval_dataset = strategy.experimental_distribute_dataset(eval_dataset)
-    preds = None
-    num_eval_steps = math.ceil(size / eval_batch_size)
-    master = master_bar(range(1))
-    eval_iterator = progress_bar(eval_dataset, total=num_eval_steps, parent=master, display=args["n_device"] > 1)
-    loss_fct = tf.keras.losses.SparseCategoricalCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
-    loss = 0.0
-
-    logging.info("***** Running evaluation *****")
-    logging.info("  Num examples = %d", size)
-    logging.info("  Batch size = %d", eval_batch_size)
-    logging.info("  Perturber = %s", args["perturber"] if args["perturber"] else "None")
-    if args["level"]:
-        logging.info("  Perturbation Level = %s", args["level"])
-
-    for eval_features, eval_labels in eval_iterator:
-        inputs = {
-            "attention_mask": eval_features["attention_mask"],
-            "training": False
-        }
-
-        if args["model_type"] != "distilbert":
-            inputs["token_type_ids"] = (
-                eval_features["token_type_ids"] if args["model_type"] in ["bert", "xlnet"] else None
-            )
-
-        with strategy.scope():
-            logits = model(eval_features["input_ids"], **inputs)[0]
-            logits = tf.reshape(logits, (-1, len(labels)))
-            cross_entropy = loss_fct(eval_labels, logits)
-            loss += tf.reduce_sum(cross_entropy) * (1.0 / eval_batch_size)
-
-        if preds is None:
-            preds = logits.numpy()
-            label_ids = eval_labels.numpy()
-        else:
-            preds = np.append(preds, logits.numpy(), axis=0)
-            label_ids = np.append(label_ids, eval_labels.numpy(), axis=0)
-
-    pred_label_ids = np.argmax(preds, axis=1)
-    y_pred = []
-    y_true = []
-    for pred, true in zip(pred_label_ids, label_ids.reshape((-1,))):
-        y_pred.append(pred)
-        y_true.append(true)
-    loss = loss / num_eval_steps
-
-    return y_true, y_pred, loss.numpy()
-
-
 def train(
         args, strategy, train_dataset, tokenizer, model, num_train_examples, labels, train_batch_size,
         pad_token_label_id
@@ -255,16 +190,18 @@ def train(
                 * args["num_train_epochs"]
         )
 
-    writer = tf.summary.create_file_writer("../../../tmp/mylogs")
+    writer = tf.summary.create_file_writer("logs")
 
     with strategy.scope():
-        loss_fct = tf.keras.losses.SparseCategoricalCrossentropy(reduction=tf.keras.losses.Reduction.NONE)
         optimizer = create_optimizer(args["learning_rate"], num_train_steps, args["warmup_steps"])
 
         if args["fp16"]:
             optimizer = tf.keras.mixed_precision.experimental.LossScaleOptimizer(optimizer, "dynamic")
 
         loss_metric = tf.keras.metrics.Mean(name="loss", dtype=tf.float32)
+        aucroc_metric = tf.keras.metrics.Mean(name='roc_auc', dtype=tf.float32)
+        ar = tf.keras.metrics.AUC()
+
         gradient_accumulator = GradientAccumulator()
 
     logging.info("***** Running training *****")
@@ -332,24 +269,28 @@ def train(
 
             with tf.GradientTape() as tape:
                 logits = model(train_features["input_ids"], **inputs)[0]
-                logits = tf.reshape(logits, (-1, len(labels)))
-                cross_entropy = loss_fct(train_labels, logits)
+                train_labels = tf.cast(train_labels, dtype=tf.float32)
+                cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(labels=train_labels, logits=logits)
                 loss = tf.reduce_sum(cross_entropy) * (1.0 / train_batch_size)
                 grads = tape.gradient(loss, model.trainable_variables)
+                ar.update_state(y_true=train_labels, y_pred=tf.sigmoid(logits))
 
                 gradient_accumulator(grads)
 
-            return cross_entropy
+            return cross_entropy  # , acc
 
         per_example_losses = strategy.experimental_run_v2(step_fn, args=(train_features, train_labels))
+
         mean_loss = strategy.reduce(tf.distribute.ReduceOp.MEAN, per_example_losses, axis=0)
+        aucroc = ar.result()
+        ar.reset_states()
 
-        return mean_loss
+        return mean_loss, aucroc
 
-    # current_time = datetime.datetime.now()
     train_iterator = master_bar(range(args["num_train_epochs"]))
     global_step = 0
     logging_loss = 0.0
+    logging_aucroc = 0.0
 
     for epoch in train_iterator:
         epoch_iterator = progress_bar(
@@ -359,12 +300,13 @@ def train(
 
         with strategy.scope():
             for train_features, train_labels in epoch_iterator:
-                loss = train_step(train_features, train_labels)
+                loss, aucroc = train_step(train_features, train_labels)
 
                 if step % args["gradient_accumulation_steps"] == 0:
                     strategy.experimental_run_v2(apply_gradients)
 
                     loss_metric(loss)
+                    aucroc_metric(aucroc)
 
                     global_step += 1
 
@@ -374,24 +316,11 @@ def train(
                             y_true, y_pred, eval_loss = evaluate(
                                 args, strategy, model, tokenizer, labels, pad_token_label_id, mode="dev"
                             )
-                            report = metrics.classification_report(y_true, y_pred, digits=4)
 
-                            logging.info("Eval at step " + str(global_step) + "\n" + report)
                             logging.info("eval_loss: " + str(eval_loss))
-
-                            accuracy = metrics.accuracy_score(y_true, y_pred)
-                            precision = metrics.precision_score(y_true, y_pred)
-                            recall = metrics.recall_score(y_true, y_pred)
-                            f1 = metrics.f1_score(y_true, y_pred)
-
-                            logging.info("eval_accuracy : " + str(accuracy))
 
                             with writer.as_default():
                                 tf.summary.scalar("eval_loss", eval_loss, global_step)
-                                tf.summary.scalar("accuracy", accuracy, global_step)
-                                tf.summary.scalar("precision", precision, global_step)
-                                tf.summary.scalar("recall", recall, global_step)
-                                tf.summary.scalar("f1", f1, global_step)
 
                         lr = optimizer.learning_rate
                         learning_rate = lr(step)
@@ -402,10 +331,17 @@ def train(
                                 "loss", (loss_metric.result() - logging_loss) / args["logging_steps"], global_step
                             )
 
+                            tf.summary.scalar(
+                                "aucroc", (aucroc_metric.result() - logging_aucroc) / args["logging_steps"],
+                                global_step
+                            )
+
                         logging_loss = loss_metric.result()
+                        logging_aucroc = aucroc_metric.result()
 
                     with writer.as_default():
                         tf.summary.scalar("loss", loss_metric.result(), step=step)
+                        tf.summary.scalar("aucroc", aucroc_metric.result(), step=step)
 
                     if args["save_steps"] > 0 and global_step % args["save_steps"] == 0:
                         # Save model checkpoint
@@ -417,29 +353,74 @@ def train(
                         model.save_pretrained(output_dir)
                         logging.info("Saving model checkpoint to %s", output_dir)
 
-                train_iterator.child.comment = f"loss : {loss_metric.result()}"
+                train_iterator.child.comment = f"loss : {loss_metric.result()} aucroc : {aucroc_metric.result()}"
                 step += 1
 
-        train_iterator.write(f"loss epoch {epoch + 1}: {loss_metric.result()}")
+        train_iterator.write(
+            f"loss epoch {epoch + 1}: {loss_metric.result()} aucroc epoch {epoch + 1}: {aucroc_metric.result()}")
 
         loss_metric.reset_states()
+        aucroc_metric.reset_states()
 
     logging.info("Training took time = {}".format("TODO"))
 
 
-def load_cache(cached_file, max_seq_length):
-    """
-    TODO: doc
+def evaluate(args, strategy, model, tokenizer, labels, pad_token_label_id, mode):
+    eval_batch_size = args["per_device_eval_batch_size"] * args["n_device"]
+    eval_dataset, size = load_and_cache_examples(
+        args, tokenizer, labels, pad_token_label_id, eval_batch_size, mode=mode
+    )
 
-    :param cached_file:
-    :param max_seq_length:
-    :return:
-    """
+    eval_dataset = strategy.experimental_distribute_dataset(eval_dataset)
+    preds = None
+    num_eval_steps = math.ceil(size / eval_batch_size)
+    master = master_bar(range(1))
+    eval_iterator = progress_bar(eval_dataset, total=num_eval_steps, parent=master, display=args["n_device"] > 1)
+
+    loss = 0.0
+
+    logging.info("***** Running evaluation *****")
+    logging.info("  Num examples = %d", size)
+    logging.info("  Batch size = %d", eval_batch_size)
+    logging.info("  Perturber = %s", args["perturber"] if args["perturber"] else "None")
+
+    if args["level"]:
+        logging.info("  Perturbation Level = %s", args["level"])
+
+    for eval_features, eval_labels in eval_iterator:
+        inputs = {
+            "attention_mask": eval_features["attention_mask"],
+            "training": False
+        }
+
+        if args["model_type"] != "distilbert":
+            inputs["token_type_ids"] = (
+                eval_features["token_type_ids"] if args["model_type"] in ["bert", "xlnet"] else None
+            )
+
+        with strategy.scope():
+            logits = model(eval_features["input_ids"], **inputs)[0]
+            eval_labels = tf.cast(eval_labels, dtype=tf.float32)
+            cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(labels=eval_labels, logits=logits)
+            loss += tf.reduce_sum(cross_entropy) * (1.0 / eval_batch_size)
+
+        if preds is None:
+            preds = logits.numpy()
+            labels = eval_labels.numpy()
+        else:
+            preds = np.append(preds, logits.numpy(), axis=0)
+            labels = np.append(labels, eval_labels.numpy(), axis=0)
+
+    loss = loss / num_eval_steps
+    return labels, preds, loss.numpy()
+
+
+def load_cache(cached_file, max_seq_length):
     name_to_features = {
         "input_ids": tf.io.FixedLenFeature([max_seq_length], tf.int64),
         "attention_mask": tf.io.FixedLenFeature([max_seq_length], tf.int64),
         "token_type_ids": tf.io.FixedLenFeature([max_seq_length], tf.int64),
-        "label": tf.io.FixedLenFeature([1], tf.int64),
+        "label": tf.io.FixedLenFeature([6], tf.int64),
     }
 
     def _decode_record(record):
@@ -487,7 +468,7 @@ def save_cache(features, cached_features_file):
         record_feature["input_ids"] = create_int_feature(feature.input_ids)
         record_feature["attention_mask"] = create_int_feature(feature.attention_mask)
         record_feature["token_type_ids"] = create_int_feature(feature.token_type_ids)
-        record_feature["label"] = create_int_feature([feature.label])
+        record_feature["label"] = create_int_feature(feature.label)
 
         tf_example = tf.train.Example(features=tf.train.Features(feature=record_feature))
 
@@ -498,6 +479,7 @@ def save_cache(features, cached_features_file):
 
 def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, batch_size, mode):
     """
+    TODO: docs
 
     :param args:
     :param tokenizer:
@@ -508,6 +490,7 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, batch_s
     :return:
     """
     drop_remainder = True if args["tpu"] or mode == "train" else False
+
     # Load data features from cache or dataset file
     if args["perturber"] and args["level"]:
         cached_features_file = os.path.join(
@@ -568,11 +551,6 @@ def load_and_cache_examples(args, tokenizer, labels, pad_token_label_id, batch_s
 
 
 def main(argv):
-    """
-
-    :param argv:
-    :return:
-    """
     logging.set_verbosity(logging.INFO)
     args = flags.FLAGS.flag_values_dict()
 
@@ -622,7 +600,7 @@ def main(argv):
 
     labels = utils.get_labels(args["labels"])
     num_labels = len(labels)
-    pad_token_label_id = 0
+    pad_token_label_id = 0  # idk -> we do not pad in tc TODO
     config_class, model_class, tokenizer_class = MODEL_CLASSES[args["model_type"]]
     config = config_class.from_pretrained(
         args["config_name"] if args["config_name"] else args["model_name_or_path"],
@@ -644,53 +622,28 @@ def main(argv):
             model = model_class.from_pretrained(
                 args["model_name_or_path"],
                 from_pt=bool(".bin" in args["model_name_or_path"]),
-                #num_labels=num_labels,
+                # num_labels=num_labels,
                 config=config,
                 cache_dir=args["cache_dir"] if args["cache_dir"] else None,
             )
-            # model.layers[-1].activation = tf.keras.activations.softmax
 
         train_batch_size = args["per_device_train_batch_size"] * args["n_device"]
         train_dataset, num_train_examples = load_and_cache_examples(
             args, tokenizer, labels, pad_token_label_id, train_batch_size, mode="train"
         )
 
-        eval_batch_size = 8
-        dev_dataset, num_dev_examples = load_and_cache_examples(
-            args, tokenizer, labels, pad_token_label_id, eval_batch_size, mode="dev"
-        )
-
-        opt = tf.keras.optimizers.Adam(learning_rate=args["learning_rate"], epsilon=1e-05)
-        if args["fp16"]:
-            opt = tf.keras.mixed_precision.experimental.LossScaleOptimizer(opt, "dynamic")
-
-        loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-        metric = tf.keras.metrics.SparseCategoricalAccuracy("accuracy")
-
-        model.compile(optimizer=opt, loss=loss, metrics=[metric])
-
-        # train_dataset = strategy.experimental_distribute_dataset(train_dataset)
-
-        history = model.fit(
+        train_dataset = strategy.experimental_distribute_dataset(train_dataset)
+        train(
+            args,
+            strategy,
             train_dataset,
-            epochs=args["num_train_epochs"],
-            steps_per_epoch=num_train_examples // train_batch_size,
-            validation_data=dev_dataset,
-            validation_steps=num_dev_examples // eval_batch_size,
-            #  callbacks=[early_stopper]
+            tokenizer,
+            model,
+            num_train_examples,
+            labels,
+            train_batch_size,
+            pad_token_label_id
         )
-
-        # train(
-        #     args,
-        #     strategy,
-        #     train_dataset,
-        #     tokenizer,
-        #     model,
-        #     num_train_examples,
-        #     labels,
-        #     train_batch_size,
-        #     pad_token_label_id
-        # )
 
         if not os.path.exists(args["output_dir"]):
             os.makedirs(args["output_dir"])
@@ -729,14 +682,17 @@ def main(argv):
             y_true, y_pred, eval_loss = evaluate(
                 args, strategy, model, tokenizer, labels, pad_token_label_id, mode="dev"
             )
-            report = classification_report(y_true, y_pred)
-            accuracy = metrics.accuracy_score(y_true, y_pred)
+            # TODO:
+            accuracy = accuracy_thresh(y_pred, y_true)
+            aucroc = roc_auc_score(y_true, y_pred)
 
             if global_step:
                 results.append({
-                    global_step + "_report": report,
+                    # TODO:
+                    # global_step + "_report": report,
                     global_step + "_loss": eval_loss,
-                    global_step + "_acc": accuracy
+                    global_step + "_acc": accuracy,
+                    global_step + "_roc_auc": aucroc
                 })
 
         if args["perturber"] and args["level"]:
@@ -747,15 +703,15 @@ def main(argv):
         with tf.io.gfile.GFile(output_eval_file, "w") as writer:
             for res in results:
                 for key, val in res.items():
-                    if "loss" in key or "acc" in key:
+                    if "loss" in key or "acc" in key or "roc_auc" in key:
                         logging.info(key + " = " + str(val))
                         writer.write(key + " = " + str(val))
                         writer.write("\n")
                     else:
                         logging.info(key)
-                        logging.info("\n" + report)
+                        # TODO: logging.info("\n" + report)
                         writer.write(key + "\n")
-                        writer.write(report)
+                        # TODO: writer.write(report)
                         writer.write("\n")
 
     if args["do_predict"]:
@@ -767,6 +723,8 @@ def main(argv):
         )
         y_true, y_pred, pred_loss = evaluate(args, strategy, model, tokenizer, labels, pad_token_label_id, mode="test")
 
+        aucroc = roc_auc_score(y_true, y_pred)
+
         if args["perturber"] and args["level"]:
             output_test_results_file = os.path.join(args["output_dir"],
                                                     f"{args['perturber']}_{args['level']}_test_results.txt")
@@ -776,44 +734,43 @@ def main(argv):
             output_test_results_file = os.path.join(args["output_dir"], "clean_test_results.txt")
             output_test_predictions_file = os.path.join(args["output_dir"], "clean_test_predictions.txt")
 
-        # report = metrics.classification_report(y_true, y_pred, digits=4)
-
         with tf.io.gfile.GFile(output_test_results_file, "w") as writer:
-            report = classification_report(y_true, y_pred, digits=4)
-            accuracy = metrics.accuracy_score(y_true, y_pred)
-
-            logging.info("\n" + report)
-
-            writer.write(report)
+            writer.write(("\n\nroc_auc = " + str(aucroc)))
             writer.write("\n\nloss = " + str(pred_loss))
-            logging.info("pred_loss: " + str(pred_loss))
-            writer.write("\naccuracy = " + str(accuracy))
-            logging.info("pred_acc:" + str(accuracy))
-
         with tf.io.gfile.GFile(output_test_predictions_file, "w") as writer:
+            # Load data features from cache or dataset file
             if args["perturber"] and args["level"]:
                 test_file_name = f"test_{args['perturber']}_{args['level']}.txt"
             else:
                 test_file_name = "test.txt"
             with tf.io.gfile.GFile(os.path.join(args["data_dir"], test_file_name), "r") as f:
                 example_id = 0
+                header = next(f)  # skip header
+                writer.write(
+                    header.strip()
+                    + ',pred_toxic,pred_severe_toxic,pred_obscene,pred_threat,pred_insult,pred_identity_hate')
+                reader = csv.reader(f)
 
-                next(f)
-                writer.write("\t".join(["gold_label", "pred_label", "sentence1", "sentence2"]) + "\n")
-                for line in f:
-                    splits = line.split("\t")
-                    gold_label = splits[0]
-                    if gold_label not in ["neutral", "entailment", "contradiction"]:
-                        continue
-                    sentence1 = splits[1]
-                    sentence2 = splits[2]
-                    if example_id >= len(y_pred):
-                        break
-                    assert gold_label == labels[y_true[example_id]], f"gold_label {gold_label} and y_true {y_true[example_id]} do not match!"
-                    output_line = "\t".join([gold_label, labels[y_pred[example_id]], sentence1, sentence2.strip()]) + "\n"
+                for row in reader:
+                    id = row[0]
+                    comment = row[1]
+                    output_line = id + ',' + comment + "," + ','.join(
+                        str(x) for x in pred_to_label(y_pred[example_id]).numpy()) + \
+                                  "," + ','.join(str(int(x)) for x in y_true[example_id]) + "\n"
                     writer.write(output_line)
                     example_id += 1
+    # exit w/o error
     return 0
+
+
+def accuracy_thresh(y_pred, y_true, thresh=0.5, sigmoid=True):
+    if sigmoid:
+        y_pred = tf.math.sigmoid(y_pred)
+    return tf.reduce_mean(tf.cast((y_pred > thresh) == tf.cast(y_true, dtype=tf.bool), dtype=tf.float32))
+
+
+def pred_to_label(pred):
+    return tf.cast(tf.cast((pred > 0.5), dtype=tf.bool), dtype=tf.int32)
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@ import numpy as np
 
 from gensim.models import KeyedVectors as W2Vec
 
-from code.attacks.visual.perturbations_store import PerturbationsStorage
+from .perturbations_store import PerturbationsStorage
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 perturbations_file = PerturbationsStorage(os.path.join(SCRIPT_DIR, "perturbations_file"))

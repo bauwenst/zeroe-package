@@ -71,13 +71,13 @@ Sequence Length | 256
 
 ### Results:
 #### RoBERTas' performance attacked by **Zéroe**
-![](attack_results.png)
+![](doc/attack_results.png)
 
 #### Adversarial Training
-![](adversarial_training_1-1.png)
+![](doc/adversarial_training_1-1.png)
 
 #### Adversarial Training (leave-one-out)
-![](adversarial_training_loo.png)
+![](doc/adversarial_training_loo.png)
 
 ## 1. Requirements
 
