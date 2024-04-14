@@ -9,26 +9,61 @@ import nltk
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 import numpy as np
 import random
+from enum import Enum
+from typing import Union
 
 from ..utils.paths import PATH_DATA_ATTACKS
 
 
-def simple_perturb(text: str, method: str, perturbation_level=0.2):
+class SimpleAttack(Enum):
+    SWAP_FULL     = 1
+    SWAP_INNER    = 2
+    INTRUDE       = 3
+    DISEMVOWEL    = 4
+    TRUNCATE      = 5
+    TYPO_KEYBOARD = 6
+    TYPO_NATURAL  = 7
+    SEGMENT       = 8
+
+    @staticmethod
+    def fromString(as_string: str) -> "SimpleAttack":
+        if as_string == "full-swap":
+            return SimpleAttack.SWAP_FULL
+        elif as_string == "inner-swap":
+            return SimpleAttack.SWAP_INNER
+        elif as_string == "intrude":
+            return SimpleAttack.INTRUDE
+        elif as_string == "disemvowel":
+            return SimpleAttack.DISEMVOWEL
+        elif as_string == "truncate":
+            return SimpleAttack.TRUNCATE
+        elif as_string == "keyboard-typo":
+            return SimpleAttack.TYPO_KEYBOARD
+        elif as_string == "natural-typo":
+            return SimpleAttack.TYPO_NATURAL
+        elif as_string == "segment":
+            return SimpleAttack.SEGMENT
+        else:
+            raise ValueError("Unknown attack method:", as_string)
+
+
+def simple_perturb(text: str, method: Union[str, SimpleAttack], perturbation_level=0.2):
     """
-
-
-
     :param text:
     :param method:
     :param perturbation_level:
     :return:
     """
+    if isinstance(method, str):
+        method = SimpleAttack.fromString(method)
+
     if not 0 <= perturbation_level <= 1:
         raise ValueError("Invalid value for perturbation level.")
 
     # we need to handle segmentation separate
-    if method == 'segment':
+    if method == SimpleAttack.SEGMENT:
         return segmentation(text, perturbation_level)
+
     words = nltk.word_tokenize(text)
     word_indexes = list(range(0, len(words)))
     perturbed_words = 0
@@ -42,19 +77,19 @@ def simple_perturb(text: str, method: str, perturbation_level=0.2):
         word_indexes.remove(index)
         word = words[index]
         # TODO: check for stopwords eventually
-        if method == 'full-swap':
+        if method == SimpleAttack.SWAP_FULL:
             perturbed_word = swap(word, inner=False)
-        elif method == 'inner-swap':
+        elif method == SimpleAttack.SWAP_INNER:
             perturbed_word = swap(word, inner=True)
-        elif method == 'intrude':
+        elif method == SimpleAttack.INTRUDE:
             perturbed_word = intruders(word, perturbation_level=perturbation_level)
-        elif method == 'disemvowel':
+        elif method == SimpleAttack.DISEMVOWEL:
             perturbed_word = disemvoweling(word)
-        elif method == 'truncate':
+        elif method == SimpleAttack.TRUNCATE:
             perturbed_word = truncating(word)
-        elif method == 'keyboard-typo':
+        elif method == SimpleAttack.TYPO_KEYBOARD:
             perturbed_word = key(word)
-        elif method == 'natural-typo':
+        elif method == SimpleAttack.TYPO_NATURAL:
             perturbed_word = natural(word)
         else:
             raise ValueError(f"Unknown operation {method}")
